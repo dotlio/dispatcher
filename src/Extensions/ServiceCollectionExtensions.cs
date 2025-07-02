@@ -14,6 +14,11 @@ public static class ServiceCollectionExtensions
         typeof(INotificationHandler<>)
     ];
 
+    private static readonly HashSet<Type> BehaviorTypes =
+    [
+        typeof(IPipelineBehavior<,>)
+    ];
+
     public static IServiceCollection AddDispatcher(this IServiceCollection services, params Assembly[] assemblies)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -24,20 +29,21 @@ public static class ServiceCollectionExtensions
             ? [Assembly.GetEntryAssembly() ?? throw new InvalidOperationException("Unable to determine entry assembly and no assemblies provided.")]
             : assemblies;
 
-        RegisterHandlers(services, assemblies);
+        RegisterTypes(services, assemblies, HandlerTypes);
+        RegisterTypes(services, assemblies, BehaviorTypes);
 
         return services;
     }
 
-    private static void RegisterHandlers(IServiceCollection services, Assembly[] assemblies)
+    private static void RegisterTypes(IServiceCollection services, Assembly[] assemblies, HashSet<Type> targetTypes)
     {
-        var handlerRegistrations = assemblies
+        var registrations = assemblies
             .SelectMany(GetTypesFromAssembly)
             .Where(IsConcreteClass)
-            .SelectMany(type => GetHandlerInterfaces(type)
-                .Select(handlerInterface => new { Type = type, Interface = handlerInterface }));
+            .SelectMany(type => GetTargetInterfaces(type, targetTypes)
+                .Select(targetInterface => new { Type = type, Interface = targetInterface }));
 
-        foreach (var registration in handlerRegistrations)
+        foreach (var registration in registrations)
         {
             services.AddTransient(registration.Interface, registration.Type);
         }
@@ -58,7 +64,7 @@ public static class ServiceCollectionExtensions
     private static bool IsConcreteClass(Type type) =>
         type is { IsClass: true, IsAbstract: false, IsGenericTypeDefinition: false };
 
-    private static IEnumerable<Type> GetHandlerInterfaces(Type type) =>
+    private static IEnumerable<Type> GetTargetInterfaces(Type type, HashSet<Type> genericInterfaceDefinitions) =>
         type.GetInterfaces()
-            .Where(i => i.IsGenericType && HandlerTypes.Contains(i.GetGenericTypeDefinition()));
+            .Where(i => i.IsGenericType && genericInterfaceDefinitions.Contains(i.GetGenericTypeDefinition()));
 }
