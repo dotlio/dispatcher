@@ -9,28 +9,47 @@ public class Mediator(IServiceProvider serviceProvider) : IMediator
 
     public async Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest
     {
-        if (request == null) throw new ArgumentNullException(nameof(request));
-        var handlerType = typeof(IRequestHandler<>).MakeGenericType(request.GetType());
-        var handler = _serviceProvider.GetService(handlerType);
-        if (handler == null) throw new InvalidOperationException($"No handler for {request.GetType().Name}");
-        await ((dynamic)handler).Handle(request, cancellationToken);
+        ArgumentNullException.ThrowIfNull(request);
+
+        var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest>>();
+        var pipelineBehaviors = _serviceProvider.GetServices<IPipelineBehavior<TRequest>>().Reverse().ToList();
+
+        RequestHandlerDelegate next = () => handler.Handle(request, cancellationToken);
+
+        foreach (var behavior in pipelineBehaviors)
+        {
+            var currentNext = next;
+            next = () => behavior.Handle(request, currentNext, cancellationToken);
+        }
+
+        await next();
     }
 
     public async Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest<TResponse>
     {
-        if (request == null) throw new ArgumentNullException(nameof(request));
-        var handlerType = typeof(IRequestHandler<,>).MakeGenericType(request.GetType(), typeof(TResponse));
-        var handler = _serviceProvider.GetService(handlerType);
-        if (handler == null) throw new InvalidOperationException($"No handler for {request.GetType().Name}");
-        return await ((dynamic)handler).Handle(request, cancellationToken);
+        ArgumentNullException.ThrowIfNull(request);
+
+        var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest, TResponse>>();
+        var pipelineBehaviors = _serviceProvider.GetServices<IPipelineBehavior<TRequest, TResponse>>().Reverse().ToList();
+
+        RequestHandlerDelegate<TResponse> next = () => handler.Handle(request, cancellationToken);
+
+        foreach (var behavior in pipelineBehaviors)
+        {
+            var currentNext = next;
+            next = () => behavior.Handle(request, currentNext, cancellationToken);
+        }
+
+        return await next();
     }
 
     public async Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification
     {
-        if (notification == null) throw new ArgumentNullException(nameof(notification));
-        var handlerType = typeof(INotificationHandler<>).MakeGenericType(notification.GetType());
-        var handlers = _serviceProvider.GetServices(handlerType);
-        var tasks = handlers.OfType<object>().Select(handler => ((dynamic)handler).Handle(notification, cancellationToken)).Select(dummy => (Task)dummy).ToList();
+        ArgumentNullException.ThrowIfNull(notification);
+
+        var handlers = _serviceProvider.GetServices<INotificationHandler<TNotification>>();
+        var tasks = handlers.Select(handler => handler.Handle(notification, cancellationToken));
+
         await Task.WhenAll(tasks);
     }
 }

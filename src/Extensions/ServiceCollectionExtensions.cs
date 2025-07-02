@@ -17,6 +17,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddDispatcher(this IServiceCollection services, params Assembly[] assemblies)
     {
         ArgumentNullException.ThrowIfNull(services);
+
         services.AddSingleton<IMediator, Mediator>();
 
         assemblies = assemblies.Length == 0
@@ -24,6 +25,7 @@ public static class ServiceCollectionExtensions
             : assemblies;
 
         RegisterHandlers(services, assemblies);
+
         return services;
     }
 
