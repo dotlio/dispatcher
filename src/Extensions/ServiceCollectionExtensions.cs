@@ -1,6 +1,7 @@
 using System.Reflection;
 using DotLio.Dispatcher.Interfaces;
 using DotLio.Dispatcher.Internals;
+using DotLio.Dispatcher.Validation;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DotLio.Dispatcher.Extensions;
@@ -14,7 +15,8 @@ public static class ServiceCollectionExtensions
         typeof(INotificationHandler<>),
         typeof(IRequestPreProcessor<>),
         typeof(IRequestPostProcessor<,>),
-        typeof(IRequestPostProcessor<>)
+        typeof(IRequestPostProcessor<>),
+        typeof(IValidator<>)
     ];
 
     private static readonly HashSet<Type> BehaviorTypes =
@@ -36,6 +38,13 @@ public static class ServiceCollectionExtensions
         RegisterTypes(services, assemblies, HandlerTypes);
         RegisterTypes(services, assemblies, BehaviorTypes);
 
+        return services;
+    }
+    
+    public static IServiceCollection AddDispatcherValidation(this IServiceCollection services)
+    {
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>));
         return services;
     }
 
