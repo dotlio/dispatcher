@@ -11,12 +11,16 @@ public static class ServiceCollectionExtensions
     [
         typeof(IRequestHandler<>),
         typeof(IRequestHandler<,>),
-        typeof(INotificationHandler<>)
+        typeof(INotificationHandler<>),
+        typeof(IRequestPreProcessor<>),
+        typeof(IRequestPostProcessor<,>),
+        typeof(IRequestPostProcessor<>)
     ];
 
     private static readonly HashSet<Type> BehaviorTypes =
     [
-        typeof(IPipelineBehavior<,>)
+        typeof(IPipelineBehavior<,>),
+        typeof(IPipelineBehavior<>)
     ];
 
     public static IServiceCollection AddDispatcher(this IServiceCollection services, params Assembly[] assemblies)
