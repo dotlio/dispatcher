@@ -1,4 +1,5 @@
 using DotLio.Dispatcher.Interfaces;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DotLio.Dispatcher.Internals;
 
@@ -21,6 +22,15 @@ public class Mediator(IServiceProvider serviceProvider) : IMediator
         var handlerType = typeof(IRequestHandler<,>).MakeGenericType(request.GetType(), typeof(TResponse));
         var handler = _serviceProvider.GetService(handlerType);
         if (handler == null) throw new InvalidOperationException($"No handler for {request.GetType().Name}");
-        return await ((dynamic)handler).Handle(request, cancellationToken);       
+        return await ((dynamic)handler).Handle(request, cancellationToken);
+    }
+
+    public async Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default) where TNotification : INotification
+    {
+        if (notification == null) throw new ArgumentNullException(nameof(notification));
+        var handlerType = typeof(INotificationHandler<>).MakeGenericType(notification.GetType());
+        var handlers = _serviceProvider.GetServices(handlerType);
+        var tasks = handlers.OfType<object>().Select(handler => ((dynamic)handler).Handle(notification, cancellationToken)).Select(dummy => (Task)dummy).ToList();
+        await Task.WhenAll(tasks);
     }
 }
