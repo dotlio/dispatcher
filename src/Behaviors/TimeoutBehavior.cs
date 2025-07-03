@@ -18,12 +18,13 @@ public class TimeoutBehavior<TRequest, TResponse>(DispatcherOptions options, ILo
 
         var requestType = typeof(TRequest).Name;
         var timeout = GetTimeoutForRequest(request);
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
-
+        
+        CancellationTokenSource? timeoutCts = null;
         try
         {
+            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+
             _logger.LogDebug("Setting timeout of {TimeoutMs}ms for request {RequestType}",
                 timeout.TotalMilliseconds, requestType);
 
@@ -32,7 +33,7 @@ public class TimeoutBehavior<TRequest, TResponse>(DispatcherOptions options, ILo
             _logger.LogDebug("Request {RequestType} completed within timeout", requestType);
             return result;
         }
-        catch (OperationCanceledException ex) when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (timeoutCts?.Token.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
         {
             _logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms",
                 requestType, timeout.TotalMilliseconds);
@@ -46,16 +47,17 @@ public class TimeoutBehavior<TRequest, TResponse>(DispatcherOptions options, ILo
 
             throw new DispatcherTimeoutException(requestType, timeout, ex);
         }
+        finally
+        {
+            timeoutCts?.Dispose();
+        }
     }
 
     protected virtual TimeSpan GetTimeoutForRequest(TRequest request)
     {
-        if (request is ITimeoutRequest timeoutRequest)
-        {
-            return timeoutRequest.Timeout;
-        }
-
-        return _options.DefaultTimeout;
+        return request is ITimeoutRequest timeoutRequest 
+            ? timeoutRequest.Timeout 
+            : _options.DefaultTimeout;
     }
 }
 
