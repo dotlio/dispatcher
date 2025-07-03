@@ -1,4 +1,5 @@
 using System.Reflection;
+using DotLio.Dispatcher.Configuration;
 using DotLio.Dispatcher.Interfaces;
 using DotLio.Dispatcher.Internals;
 using DotLio.Dispatcher.Validation;
@@ -41,7 +42,20 @@ public static class ServiceCollectionExtensions
         return services;
     }
     
-    public static IServiceCollection AddDispatcherValidation(this IServiceCollection services)
+    public static IServiceCollection AddDispatcher(this IServiceCollection services, Action<DispatcherOptions>? configureOptions = null, params Assembly[] assemblies)
+    {
+        var options = new DispatcherOptions();
+        configureOptions?.Invoke(options);
+    
+        services.AddSingleton(options);
+        services.AddSingleton<IMediator, Mediator>();
+        
+        if (options.EnableValidation) services.AddDispatcherValidation();
+        
+        return services;
+    }
+
+    private static IServiceCollection AddDispatcherValidation(this IServiceCollection services)
     {
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>));
