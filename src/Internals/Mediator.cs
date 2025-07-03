@@ -5,9 +5,10 @@ using Microsoft.Extensions.Logging;
 
 namespace DotLio.Dispatcher.Internals;
 
-public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger) : IMediator
+public class Mediator(IServiceProvider serviceProvider, IHandlerCache handlerCache, ILogger<Mediator> logger) : IMediator
 {
     private readonly IServiceProvider _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+    private readonly IHandlerCache _handlerCache = handlerCache ?? throw new ArgumentNullException(nameof(handlerCache));
     private readonly ILogger<Mediator> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     public async Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest
@@ -15,13 +16,39 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
         ArgumentNullException.ThrowIfNull(request);
         await ExecuteRequest(typeof(TRequest).Name, async () =>
         {
-            var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest>>();
-            var preProcessors = GetProcessors<IRequestPreProcessor<TRequest>>();
+            var handler = GetHandler<IRequestHandler<TRequest>>();
+            var preProcessors = GetHandlers<IRequestPreProcessor<TRequest>>();
+            var postProcessors = GetHandlers<IRequestPostProcessor<TRequest>>();
+            var pipelineBehaviors = GetHandlers<IPipelineBehavior<TRequest>>();
 
-            foreach (var preProcessor in preProcessors)
-                await preProcessor.Process(request, cancellationToken);
+            async Task CoreHandler()
+            {
+                foreach (var preProcessor in preProcessors)
+                    await preProcessor.Process(request, cancellationToken);
 
-            await handler.Handle(request, cancellationToken);
+                await handler.Handle(request, cancellationToken);
+
+                foreach (var postProcessor in postProcessors)
+                    await postProcessor.Process(request, cancellationToken);
+            }
+
+            var behaviorsList = pipelineBehaviors.ToList();
+
+            if (behaviorsList.Count == 0)
+            {
+                await CoreHandler();
+                return;
+            }
+
+            Func<Task> pipeline = CoreHandler;
+            for (var i = behaviorsList.Count - 1; i >= 0; i--)
+            {
+                var behavior = behaviorsList[i];
+                var next = pipeline;
+                pipeline = () => behavior.Handle(request, () => next(), cancellationToken);
+            }
+
+            await pipeline();
         }, cancellationToken);
     }
 
@@ -30,10 +57,10 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
         ArgumentNullException.ThrowIfNull(request);
         return await ExecuteRequest<TResponse>(typeof(TRequest).Name, async () =>
         {
-            var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest, TResponse>>();
-            var preProcessors = GetProcessors<IRequestPreProcessor<TRequest>>();
-            var postProcessors = GetProcessors<IRequestPostProcessor<TRequest, TResponse>>();
-            var pipelineBehaviors = GetProcessors<IPipelineBehavior<TRequest, TResponse>>();
+            var handler = GetHandler<IRequestHandler<TRequest, TResponse>>();
+            var preProcessors = GetHandlers<IRequestPreProcessor<TRequest>>();
+            var postProcessors = GetHandlers<IRequestPostProcessor<TRequest, TResponse>>();
+            var pipelineBehaviors = GetHandlers<IPipelineBehavior<TRequest, TResponse>>();
 
             async Task<TResponse> CoreHandler()
             {
@@ -48,13 +75,19 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
                 return response;
             }
 
-            RequestHandlerDelegate<TResponse> pipeline = CoreHandler;
+            var behaviorsList = pipelineBehaviors.ToList();
 
-            for (var i = pipelineBehaviors.Count - 1; i >= 0; i--)
+            if (behaviorsList.Count == 0)
             {
-                var behavior = pipelineBehaviors[i];
-                var currentPipeline = pipeline;
-                pipeline = () => behavior.Handle(request, currentPipeline, cancellationToken);
+                return await CoreHandler();
+            }
+
+            Func<Task<TResponse>> pipeline = CoreHandler;
+            for (var i = behaviorsList.Count - 1; i >= 0; i--)
+            {
+                var behavior = behaviorsList[i];
+                var next = pipeline;
+                pipeline = () => behavior.Handle(request, () => next(), cancellationToken);
             }
 
             return await pipeline();
@@ -66,16 +99,35 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
         ArgumentNullException.ThrowIfNull(notification);
         await ExecuteNotification(typeof(TNotification).Name, async () =>
         {
-            var handlers = _serviceProvider.GetServices<INotificationHandler<TNotification>>().ToList();
+            var handlers = GetHandlers<INotificationHandler<TNotification>>();
+            var handlersList = handlers.ToList();
 
-            if (handlers.Count == 0)
+            if (handlersList.Count == 0)
             {
                 _logger.LogWarning("No handlers found for {NotificationType}", typeof(TNotification).Name);
                 return;
             }
 
-            _logger.LogDebug("Found {HandlerCount} handlers", handlers.Count);
-            var tasks = handlers.Select(handler => handler.Handle(notification, cancellationToken));
+            _logger.LogDebug("Found {HandlerCount} handlers", handlersList.Count);
+
+            var tasks = handlersList.Select(async handler =>
+            {
+                try
+                {
+                    await handler.Handle(notification, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Handler {HandlerType} failed for notification {NotificationType}",
+                        handler.GetType().Name, typeof(TNotification).Name);
+                    throw;
+                }
+            });
+
             await Task.WhenAll(tasks);
         }, cancellationToken);
     }
@@ -100,6 +152,32 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
         {
             _logger.LogError(ex, "{RequestType} failed after {ElapsedMs}ms", requestType, stopwatch.ElapsedMilliseconds);
             throw;
+        }
+    }
+
+    private T GetHandler<T>()
+    {
+        try
+        {
+            return _handlerCache.GetHandler<T>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Handler cache failed for {HandlerType}, falling back to service provider", typeof(T).Name);
+            return _serviceProvider.GetRequiredService<T>();
+        }
+    }
+
+    private IEnumerable<T> GetHandlers<T>()
+    {
+        try
+        {
+            return _handlerCache.GetHandlers<T>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Handler cache failed for {HandlerType}, falling back to service provider", typeof(T).Name);
+            return _serviceProvider.GetServices<T>();
         }
     }
 
@@ -149,6 +227,4 @@ public class Mediator(IServiceProvider serviceProvider, ILogger<Mediator> logger
             throw;
         }
     }
-
-    private List<T> GetProcessors<T>() => _serviceProvider.GetServices<T>().ToList();
 }

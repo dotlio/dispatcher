@@ -6,26 +6,110 @@ namespace DotLio.Dispatcher.Behaviors;
 
 public class TimeoutBehavior<TRequest, TResponse>(DispatcherOptions options, ILogger<TimeoutBehavior<TRequest, TResponse>> logger) : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>
 {
+    private readonly DispatcherOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<TimeoutBehavior<TRequest, TResponse>> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
     public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
     {
+        if (!_options.EnableTimeouts)
+        {
+            return await next();
+        }
+
+        var requestType = typeof(TRequest).Name;
+        var timeout = GetTimeoutForRequest(request);
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(options.DefaultTimeout);
+        timeoutCts.CancelAfter(timeout);
 
         try
         {
-            return await next().WaitAsync(timeoutCts.Token);
+            _logger.LogDebug("Setting timeout of {TimeoutMs}ms for request {RequestType}",
+                timeout.TotalMilliseconds, requestType);
+
+            var result = await next().WaitAsync(timeoutCts.Token);
+
+            _logger.LogDebug("Request {RequestType} completed within timeout", requestType);
+            return result;
         }
-        catch (TimeoutException)
+        catch (OperationCanceledException ex) when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            var requestType = typeof(TRequest).Name;
-            logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms", requestType, options.DefaultTimeout.TotalMilliseconds);
-            throw new DispatcherTimeoutException(requestType, options.DefaultTimeout);
+            _logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms",
+                requestType, timeout.TotalMilliseconds);
+
+            throw new DispatcherTimeoutException(requestType, timeout, ex);
         }
+        catch (TimeoutException ex)
+        {
+            _logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms",
+                requestType, timeout.TotalMilliseconds);
+
+            throw new DispatcherTimeoutException(requestType, timeout, ex);
+        }
+    }
+
+    protected virtual TimeSpan GetTimeoutForRequest(TRequest request)
+    {
+        if (request is ITimeoutRequest timeoutRequest)
+        {
+            return timeoutRequest.Timeout;
+        }
+
+        return _options.DefaultTimeout;
     }
 }
 
-public class DispatcherTimeoutException(string requestType, TimeSpan timeout) : Exception($"Request {requestType} timed out after {timeout.TotalMilliseconds}ms")
+public class TimeoutBehavior<TRequest>(DispatcherOptions options, ILogger<TimeoutBehavior<TRequest>> logger) : IPipelineBehavior<TRequest> where TRequest : IRequest
 {
-    public string RequestType { get; } = requestType;
-    public TimeSpan Timeout { get; } = timeout;
+    private readonly DispatcherOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<TimeoutBehavior<TRequest>> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+    public async Task Handle(TRequest request, RequestHandlerDelegate next, CancellationToken cancellationToken)
+    {
+        if (!_options.EnableTimeouts)
+        {
+            await next();
+            return;
+        }
+
+        var requestType = typeof(TRequest).Name;
+        var timeout = GetTimeoutForRequest(request);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            _logger.LogDebug("Setting timeout of {TimeoutMs}ms for request {RequestType}",
+                timeout.TotalMilliseconds, requestType);
+
+            await next().WaitAsync(timeoutCts.Token);
+
+            _logger.LogDebug("Request {RequestType} completed within timeout", requestType);
+        }
+        catch (OperationCanceledException ex) when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms",
+                requestType, timeout.TotalMilliseconds);
+
+            throw new DispatcherTimeoutException(requestType, timeout, ex);
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogError("Request {RequestType} timed out after {TimeoutMs}ms",
+                requestType, timeout.TotalMilliseconds);
+
+            throw new DispatcherTimeoutException(requestType, timeout, ex);
+        }
+    }
+
+    protected virtual TimeSpan GetTimeoutForRequest(TRequest request)
+    {
+        if (request is ITimeoutRequest timeoutRequest)
+        {
+            return timeoutRequest.Timeout;
+        }
+
+        return _options.DefaultTimeout;
+    }
 }

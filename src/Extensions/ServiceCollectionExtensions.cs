@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.AddSingleton<IHandlerCache, HandlerCache>();
         services.AddSingleton<IMediator, Mediator>();
 
         assemblies = assemblies.Length == 0
