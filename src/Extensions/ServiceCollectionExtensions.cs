@@ -1,5 +1,7 @@
 using System.Reflection;
+using DotLio.Dispatcher.Behaviors;
 using DotLio.Dispatcher.Configuration;
+using DotLio.Dispatcher.Diagnostics;
 using DotLio.Dispatcher.Interfaces;
 using DotLio.Dispatcher.Internals;
 using DotLio.Dispatcher.Validation;
@@ -26,11 +28,25 @@ public static class ServiceCollectionExtensions
         typeof(IPipelineBehavior<>)
     ];
 
-    public static IServiceCollection AddDispatcher(this IServiceCollection services, params Assembly[] assemblies)
+    public static IServiceCollection AddDispatcher(this IServiceCollection services, Action<DispatcherOptions>? configureOptions = null, params Assembly[] assemblies)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddSingleton<IHandlerCache, HandlerCache>();
+        var options = new DispatcherOptions();
+        configureOptions?.Invoke(options);
+        options.Validate();
+        
+        services.AddSingleton(options);
+
+        if (options.EnableHandlerCache)
+        {
+            services.AddSingleton<IHandlerCache, HandlerCache>();
+        }
+        else
+        {
+            services.AddSingleton<IHandlerCache, NoOpHandlerCache>();
+        }
+
         services.AddSingleton<IMediator, Mediator>();
 
         assemblies = assemblies.Length == 0
@@ -40,26 +56,35 @@ public static class ServiceCollectionExtensions
         RegisterTypes(services, assemblies, HandlerTypes);
         RegisterTypes(services, assemblies, BehaviorTypes);
 
-        return services;
-    }
-    
-    public static IServiceCollection AddDispatcher(this IServiceCollection services, Action<DispatcherOptions>? configureOptions = null, params Assembly[] assemblies)
-    {
-        var options = new DispatcherOptions();
-        configureOptions?.Invoke(options);
-    
-        services.AddSingleton(options);
-        services.AddSingleton<IMediator, Mediator>();
-        
-        if (options.EnableValidation) services.AddDispatcherValidation();
-        
+        if (options.EnableValidation)
+        {
+            services.AddDispatcherValidation();
+        }
+
+        if (options.EnableTimeouts)
+        {
+            services.AddDispatcherTimeouts();
+        }
+
         return services;
     }
 
-    private static IServiceCollection AddDispatcherValidation(this IServiceCollection services)
+    public static IServiceCollection AddDispatcher(this IServiceCollection services, params Assembly[] assemblies)
+    {
+        return services.AddDispatcher(null, assemblies);
+    }
+
+    public static IServiceCollection AddDispatcherValidation(this IServiceCollection services)
     {
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>));
+        return services;
+    }
+
+    public static IServiceCollection AddDispatcherTimeouts(this IServiceCollection services)
+    {
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(TimeoutBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<>), typeof(TimeoutBehavior<>));
         return services;
     }
 
@@ -95,4 +120,27 @@ public static class ServiceCollectionExtensions
     private static IEnumerable<Type> GetTargetInterfaces(Type type, HashSet<Type> genericInterfaceDefinitions) =>
         type.GetInterfaces()
             .Where(i => i.IsGenericType && genericInterfaceDefinitions.Contains(i.GetGenericTypeDefinition()));
+
+    private class NoOpHandlerCache(IServiceProvider serviceProvider) : IHandlerCache
+    {
+        private readonly IServiceProvider _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+
+        public T GetHandler<T>() => _serviceProvider.GetRequiredService<T>();
+
+        public IEnumerable<T> GetHandlers<T>() => _serviceProvider.GetServices<T>();
+
+        public void ClearCache()
+        {
+        }
+
+        public CacheStatistics GetStatistics() => new()
+        {
+            CacheHits = 0,
+            CacheMisses = 0,
+            HitRate = 0,
+            SingleHandlerCount = 0,
+            MultiHandlerCount = 0,
+            TotalCachedItems = 0
+        };
+    }
 }
